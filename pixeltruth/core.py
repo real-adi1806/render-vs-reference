@@ -38,7 +38,7 @@ class Stats:
     """What one instrument measured, including how much it looked at.
 
     `n` is not decoration. If `n` changes between two runs of the same
-    instrument, the sample changed and the statistics are not comparable --
+    instrument, the sample changed and the statistics are not comparable;
     that is failure mode 2 and it is the single most useful field here.
     """
 
@@ -85,7 +85,7 @@ def measure(
     """Measure an image, or only the pixels named by `mask`.
 
     `step` samples every Nth pixel in each axis for speed. Use the SAME step on
-    both sides -- grain is a neighbour statistic, so a different step measures a
+    both sides: grain is a neighbour statistic, so a different step measures a
     different distance and the numbers stop meaning the same thing.
     """
     px = image.convert("RGB").load()
@@ -140,64 +140,122 @@ def measure(
     )
 
 
+def _grow(lum, start, keep) -> list[tuple[int, int]]:
+    """Every pixel 4-connected to `start` through pixels where `keep(luma)`."""
+    sh, sw = len(lum), len(lum[0])
+    seen = set(start)
+    queue = deque(start)
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < sw and 0 <= ny < sh and (nx, ny) not in seen and keep(lum[ny][nx]):
+                seen.add((nx, ny))
+                queue.append((nx, ny))
+    return list(seen)
+
+
+def _outline(
+    image: "Image.Image",
+    percentile: float = 0.72,
+    floor: float = 45.0,
+    min_pixels: int = 200,
+    downscale: int = 4,
+    min_contrast: float = 1.0,
+    max_share: float = 0.5,
+) -> tuple[set[tuple[int, int]] | None, bool]:
+    """`isolate()`, plus whether the outline was drawn against the ground.
+
+    False means it fell back to a brightness cutoff, which the command line
+    reports, because that outline moves when the object's brightness does.
+    """
+    w, h = image.size
+    sw, sh = max(1, w // downscale), max(1, h // downscale)
+    # BOX, not LANCZOS: a sharp filter rings at the object's edge, and the
+    # ringing would be read as "differs from the ground".
+    small = image.convert("RGB").resize((sw, sh), Image.BOX)
+    sp = small.load()
+    lum = [[luma(sp[x, y]) for x in range(sw)] for y in range(sh)]
+
+    # Where the object is: the largest bright region.
+    flat = sorted(v for row in lum for v in row)
+    bright = max(floor, flat[int(len(flat) * percentile)])
+    seed: list[tuple[int, int]] = []
+    claimed: set[tuple[int, int]] = set()
+    for y0 in range(sh):
+        for x0 in range(sw):
+            if (x0, y0) in claimed or lum[y0][x0] < bright:
+                continue
+            comp = _grow(lum, [(x0, y0)], lambda v: v >= bright)
+            claimed.update(comp)
+            if len(comp) > len(seed):
+                seed = comp
+    if not seed:
+        return None, False
+
+    # How far it extends: everything connected to it that differs from the
+    # ground, lighter or darker, by more than the ground's own noise.
+    ring = (
+        [lum[0][x] for x in range(sw)] + [lum[sh - 1][x] for x in range(sw)]
+        + [lum[y][0] for y in range(sh)] + [lum[y][sw - 1] for y in range(sh)]
+    )
+    ground = st.median(ring)
+    noise = 1.4826 * st.median(abs(v - ground) for v in ring)
+    margin = max(min_contrast, 3 * noise)
+    grown = _grow(lum, seed, lambda v: abs(v - ground) > margin)
+
+    from_ground = len(grown) <= max_share * sw * sh
+    region = grown if from_ground else seed
+    if len(region) < min_pixels:
+        return None, from_ground
+
+    mask = {
+        (x * downscale + ox, y * downscale + oy)
+        for x, y in region
+        for ox in range(downscale)
+        for oy in range(downscale)
+        if x * downscale + ox < w and y * downscale + oy < h
+    }
+    return mask, from_ground
+
+
 def isolate(
     image: "Image.Image",
     percentile: float = 0.72,
     floor: float = 45.0,
     min_pixels: int = 200,
     downscale: int = 4,
+    min_contrast: float = 1.0,
+    max_share: float = 0.5,
 ) -> set[tuple[int, int]] | None:
-    """Find the largest bright connected region and return its pixel set.
+    """Find the main object and return its pixel set.
 
     This exists because measuring a moving object with a fixed rectangle mixes
-    object with background by a different amount in every frame -- failure mode
-    1. Two crops of the same build reported `mean 86.4` and `mean 157.9` for
+    object with background by a different amount in every frame (failure mode
+    1). Two crops of the same build reported `mean 86.4` and `mean 157.9` for
     the same element before this function existed.
+
+    Two steps. The largest region brighter than `floor` and the `percentile`
+    of the frame says where the object is. Its outline is then grown through
+    every connected pixel that differs from the ground (the median of the
+    frame's border), lighter or darker, by more than three robust standard
+    deviations of the border, and at least `min_contrast`. A shadow touching
+    the object therefore counts as part of it.
+
+    The outline must not come from a brightness cutoff. The first version drew
+    it with one, so a uniformly darker copy of the same object kept fewer of
+    its own pixels, its box shrank toward the highlight, and a different,
+    brighter region was measured: 0.64x mean and 0.49x form for a true 0.6x.
+    That is failure mode 2, inside the instrument built against mode 1.
+
+    If the grown outline covers more than `max_share` of the frame, the ground
+    is too uneven to tell from the object, and the bright region alone is
+    returned. That outline does depend on brightness.
 
     Returns None when nothing large enough is found, which is a real answer:
     "there is no object here" beats a number measured on background.
     """
-    w, h = image.size
-    sw, sh = max(1, w // downscale), max(1, h // downscale)
-    small = image.convert("RGB").resize((sw, sh), Image.LANCZOS)
-    sp = small.load()
-
-    lum = [[luma(sp[x, y]) for x in range(sw)] for y in range(sh)]
-    flat = sorted(v for row in lum for v in row)
-    threshold = max(floor, flat[int(len(flat) * percentile)])
-
-    seen = [[False] * sw for _ in range(sh)]
-    best: list[tuple[int, int]] = []
-
-    for y0 in range(sh):
-        for x0 in range(sw):
-            if seen[y0][x0] or lum[y0][x0] < threshold:
-                continue
-            comp: list[tuple[int, int]] = []
-            queue = deque([(x0, y0)])
-            seen[y0][x0] = True
-            while queue:
-                x, y = queue.popleft()
-                comp.append((x, y))
-                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < sw and 0 <= ny < sh and not seen[ny][nx]:
-                        if lum[ny][nx] >= threshold:
-                            seen[ny][nx] = True
-                            queue.append((nx, ny))
-            if len(comp) > len(best):
-                best = comp
-
-    if len(best) < min_pixels:
-        return None
-
-    return {
-        (x * downscale + ox, y * downscale + oy)
-        for x, y in best
-        for ox in range(downscale)
-        for oy in range(downscale)
-        if x * downscale + ox < w and y * downscale + oy < h
-    }
+    return _outline(image, percentile, floor, min_pixels, downscale, min_contrast, max_share)[0]
 
 
 def core_box(mask: Iterable[tuple[int, int]], inset: float = 0.25) -> tuple[int, int, int, int]:
@@ -221,7 +279,7 @@ def histogram(image: "Image.Image", bins: Sequence[float] = (4, 10, 15, 20, 30, 
 
     Run this before concluding anything about tone. A masked percentile tells
     you about the pixels that survived the mask, which is not the same thing
-    and can be the reverse -- failure mode 2.
+    and can be the reverse (failure mode 2).
     """
     px = image.convert("RGB").load()
     w, h = image.size

@@ -14,7 +14,7 @@ import sys
 
 from PIL import Image
 
-from .core import compare, histogram, isolate, core_box, measure, speck_density
+from .core import _outline, compare, histogram, core_box, speck_density
 
 
 def _load(path: str) -> Image.Image:
@@ -25,17 +25,24 @@ def _load(path: str) -> Image.Image:
 
 
 def _prepare(img: Image.Image, use_isolate: bool, label: str):
-    """Optionally reduce an image to the core of its largest bright object."""
+    """Optionally reduce an image to the core of its main object."""
     if not use_isolate:
         return img
-    mask = isolate(img)
+    mask, from_ground = _outline(img)
     if mask is None:
-        print(f"  ! {label}: no object found, measuring the whole frame", file=sys.stderr)
-        return img
+        raise SystemExit(f"{label}: no object found, so nothing was measured "
+                         "(measuring the whole frame would measure the background)")
+    if not from_ground:
+        print(f"  ! {label}: the ground is too uneven to outline the object against, so it was\n"
+              "    outlined with a brightness cutoff. A brighter or darker copy would be measured\n"
+              "    over a different region: if brightness differs, crop both sides by hand.",
+              file=sys.stderr)
     box = core_box(mask)
-    if box[2] - box[0] < 20 or box[3] - box[1] < 20:
-        print(f"  ! {label}: object too small to erode, measuring whole frame", file=sys.stderr)
-        return img
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    if bw < 20 or bh < 20:
+        raise SystemExit(f"{label}: object found, but its core ({bw}x{bh} px) is too small to "
+                         "measure, so nothing was measured (measuring the whole frame would "
+                         "mostly measure the background)")
     return img.crop(box)
 
 

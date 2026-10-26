@@ -27,13 +27,23 @@ not measuring the object; you are measuring an accidental mixture.
 
 **What it costs.** A whole investigation. The conclusion drawn from those two
 numbers was "our elements are wildly inconsistent" and a fix was designed for
-it. Measured properly, the spread was *1.60x against the reference's 1.79x* --
+it. Measured properly, the spread was *1.60x against the reference's 1.79x*:
 the inconsistency did not exist. The real defect was a uniform 40% brightness
 error that the bad measurement had hidden behind fake variance.
 
-**The fix.** `isolate()`. Find the object as a connected component, erode to its
-core, measure inside that. If the object is not found, say so rather than
-measuring whatever was in the box.
+**The fix.** `isolate()`. Find the object as a connected component, take the middle
+of its bounding box (a 25% inset), measure inside that. If the object is not
+found, `isolate()` returns None and the command line stops and measures nothing,
+rather than measuring whatever was in the box.
+
+**The fix had failure mode 2 in it.** The first `isolate()` drew the object's
+outline with one brightness cutoff. A uniformly darker copy of the same object
+kept fewer of its own pixels above that line, so its box shrank toward the
+highlight and a different, brighter part of it was measured. On a test sphere
+at 0.6x brightness it read `mean 0.64x` and `form 0.49x`, and the low `form`
+was read as a lighting difference that did not exist. The outline now comes
+from where the object differs from the ground, which does not move with the
+object's brightness; the same pair reads `0.59x` and `0.61x`.
 
 ---
 
@@ -68,7 +78,7 @@ ours      15.8% below L10
 ```
 
 The reference had **no near-black anywhere**; its whole picture lived in a
-narrow band. Ours had a hole in it. The defect was never the object -- it was a
+narrow band. Ours had a hole in it. The defect was never the object: it was a
 near-black band painted *behind* it, a trench cut out of the room. Three
 separate attempts to fix the object were the wrong target.
 
@@ -98,7 +108,7 @@ resampler's smoothness, not the image's texture. Every upscaled comparison
 converges toward "identical" no matter how different the sources are.
 
 **The fix.** Measure at native resolution. Magnify to *look*, never to measure.
-If the two sides are at different scales, downscale the larger -- never upscale
+If the two sides are at different scales, downscale the larger, never upscale
 the smaller.
 
 ---
