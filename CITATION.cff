@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "render-vs-reference: measure a render against a reference image without lying to yourself"
+authors:
+  - family-names: Krishnan
+    given-names: Adithya
+version: 0.1.0
+date-released: 2026-10-26
+license: MIT
+repository-code: "https://github.com/real-adi1806/render-vs-reference"
+keywords:
+  - image comparison
+  - visual regression
+  - measurement error
+  - design QA
+  - screenshot testing

@@ -1,37 +1,70 @@
-# pixel-truth
+# render-vs-reference
 
-**Measure a render against a reference image without lying to yourself.**
+[![tests](https://github.com/real-adi1806/render-vs-reference/actions/workflows/tests.yml/badge.svg)](https://github.com/real-adi1806/render-vs-reference/actions/workflows/tests.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+
+**Measure a render against a reference image without lying to yourself.** The
+command it installs is called `pixel-truth`.
 
 Pixel-diff tools tell you *that* two images differ. This tells you *how*, in
-numbers you can act on — and, more importantly, it is built to stop the four
-specific ways those numbers quietly come out wrong.
+numbers you can act on. More importantly, it is built to stop the four specific
+ways those numbers quietly come out wrong.
+
+## Quick start
 
 ```bash
-pip install pillow
-python -m pixeltruth.cli compare reference.png ours.png --isolate
+pip install git+https://github.com/real-adi1806/render-vs-reference
+pixel-truth compare reference.png yours.png --isolate
 ```
 
+Or run it without installing anything (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+uvx --from git+https://github.com/real-adi1806/render-vs-reference pixel-truth compare reference.png yours.png --isolate
 ```
-  i scales differ; downscaling both to 284x248
-  reference n=17608   candidate n=17608
+
+Needs only Pillow. Python 3.9 or later.
+
+## A real example
+
+Clone the repository to get the two example images, then measure them:
+
+```bash
+git clone https://github.com/real-adi1806/render-vs-reference
+cd render-vs-reference
+pip install .
+python examples/make_examples.py
+pixel-truth compare examples/lit.png examples/shuffled.png
+```
+
+The two example images contain **exactly the same pixel values**. `lit.png` is
+a lit, curved surface; `shuffled.png` is those same pixels in a random order.
+
+| `lit.png` | `shuffled.png` |
+|---|---|
+| ![a lit, curved surface](examples/lit.png) | ![the same pixels in random order](examples/shuffled.png) |
+
+```
+  reference n=36864   candidate n=36864
 
   field         reference  candidate     delta       x
   ----------------------------------------------------
-  mean             108.74      85.20    -23.54    0.78
-  p10               75.59      39.03    -36.57    0.52
-  p50               96.17      87.90     -8.28    0.91
-  p90              174.75     123.47    -51.28    0.71
-  saturation        20.19      25.58     +5.39    1.27
-  grain              6.07       5.93     -0.14    0.98
-  form              20.34      20.22     -0.12    0.99
-  ratio              3.35       3.41     +0.06    1.02
-  dark_share         0.00       6.57     +6.57       -
+  mean             109.81     109.81     +0.00    1.00
+  p10               44.81      44.81     +0.00    1.00
+  p50              117.57     117.57     +0.00    1.00
+  p90              160.09     160.09     +0.00    1.00
+  saturation        36.84      36.84     +0.00    1.00
+  grain              2.00      40.31    +38.31   20.15
+  form              40.16       0.92    -39.25    0.02
+  ratio             20.08       0.02    -20.06    0.00
+  dark_share         1.48       1.48     +0.00       -
 ```
 
-Read that: our surface texture is right (`grain`, `form`, `ratio` all within
-2%), but it is too dark at the bottom end and carries 6.6% near-black that the
-reference does not have. That is a specific, fixable statement. "12% of pixels
-differ" is not.
+Read that: every histogram statistic is identical, because the pixels are the
+same. A tool that compares distributions would call these a perfect match. One
+is an object and the other is static, and `ratio` says so with a single number:
+20 for the shaded surface, 0.02 for the noise.
 
 ---
 
@@ -40,8 +73,8 @@ differ" is not.
 It was extracted from a real project: rebuilding an interactive site against a
 reference, where every "match" had to be defended with a number.
 
-Four times, the numbers were confidently wrong. Not noisy — **wrong in the
-opposite direction**, with enough precision to be believed and acted on. One of
+Four times, the numbers were confidently wrong. Not noisy: precise,
+believable, and pointing at the wrong conclusion. One of
 them produced a fix that made every metric worse.
 
 Each one has the same shape: **you measured something other than the object.**
@@ -50,7 +83,7 @@ Each one has the same shape: **you measured something other than the object.**
 |---|---|---|
 | 1 | A fixed box on a moving object | Same element, same build, measured `86.4` and `157.9` |
 | 2 | A threshold mask hides your own change | Built a fix; every number got worse; the sample had shrunk 12,554 → 11,034 |
-| 3 | A magnified crop measures the upscaling | Grain read `1.07 vs 1.00` — a match. Native: `3.64 vs 2.50`, 46% off |
+| 3 | A magnified crop measures the upscaling | Grain read `1.07 vs 1.00`, a match. Native: `3.64 vs 2.50`, 46% off |
 | 4 | Two scales wearing one name | `p90 105.0` quoted as CIE L\*, which caps at 100 |
 
 **[docs/FAILURE-MODES.md](docs/FAILURE-MODES.md) is the real content of this
@@ -65,19 +98,26 @@ repo.** The code is the smaller half.
 | `mean p10 p50 p90` | luma, **0-255**, named so you cannot confuse it with L\* |
 | `dark_share` | fraction below a threshold you choose |
 | `saturation` | median, 0-100 |
-| `grain` | median absolute luma delta between adjacent pixels — *surface texture* |
-| `form` | sd of 4×4 cell means — *variation across the object* |
+| `grain` | median absolute luma delta between adjacent pixels: *surface texture* |
+| `form` | sd of 4×4 cell means: *variation across the object* |
 | `ratio` | `form / grain` |
 
 **`ratio` is the one worth knowing about.** A lit solid varies more *across
 itself* than *between neighbouring pixels*, so its ratio is well above 1. Noise
-painted on a silhouette is the exact inverse. A histogram cannot tell those
-apart — two images with identical distributions can be a shaded object and
-static — but this can, and it is a single number.
+painted on a silhouette goes the other way, well below 1. A histogram cannot tell those
+apart (two images with identical distributions can be a shaded object and
+static, as the example above shows), but this can, and it is a single number.
+
+`form` and `grain` are in luma levels, so they shrink when the whole object gets
+darker. A copy at 0.6x brightness reads about 0.6x on `mean` and on `form`. A
+`form` gap points at the lighting only when it differs from the `mean` gap.
 
 ---
 
-## Commands
+## Use it on your own images
+
+Give it two images, the reference first and yours second. Any format Pillow can
+open works.
 
 ```bash
 # the main event: one instrument, both sides, same arguments
@@ -96,13 +136,25 @@ pixel-truth compare ref.png ours.png --json
 
 ### `--isolate`
 
-Finds the largest bright connected region, erodes to its core, and measures
-inside that.
+Finds the object, draws its outline, and measures the middle of the outline's
+bounding box (a 25% inset), which drops the rim. The largest bright region says
+where the object is. The outline is everything connected to it that differs
+from the ground (the median of the frame's border), lighter or darker, by more
+than the ground's own noise. So a darker copy of the same object gets the same
+outline, and the same part of it is measured.
 
 Use it whenever the thing you care about **moves, scales or travels**. A fixed
 rectangle mixes object with background in a ratio that changes every frame, so
-you are measuring an accidental blend. If no object is found it says so rather
-than measuring the background.
+you are measuring an accidental blend. If no object is found, or its core is
+under 20 pixels on a side, the command line stops with an error and measures
+nothing, rather than measuring the background. If the ground is too uneven to
+outline against (the outline would cover more than half the frame), it falls
+back to the bright region alone and says so. That outline moves with
+brightness, so crop both sides by hand if their brightness differs.
+
+It looks for a bright object. On a dark object over a light page it finds the
+page, so crop both images to the object yourself, by the same rule on both
+sides.
 
 ---
 
@@ -126,7 +178,7 @@ print(histogram(ours))          # unmasked, every pixel
 ```
 
 `measure()` returns a `Stats` dataclass. **`Stats.n` is the sample size and it
-is not decoration** — if `n` changes between runs of the same instrument, the
+is not decoration.** If `n` changes between runs of the same instrument, the
 sample changed and your statistics are not comparable. `compare()` sets
 `sample_warning` when the two sides differ by more than 25%.
 
@@ -146,13 +198,20 @@ its own docstring.
 
 ## Tests
 
-The tests are written as the failure modes. Each constructs the situation that
-produced a wrong answer and asserts the library now gives the right one —
-including one test that asserts a **fixed box still gets it wrong**, so the
-fixture cannot silently stop demonstrating the bug.
+The tests are written as the failure modes. Modes 1 and 3 are rebuilt as tests
+that construct the situation and assert the right answer; modes 2 and 4 are
+covered by property checks (an unmasked histogram sees the dark pixels, `luma()`
+is 0 to 255). One test asserts that a **fixed box still gets it wrong**, so the
+fixture cannot silently stop demonstrating the bug. Another makes the
+sample-size warning fire. Command-line tests check that `--isolate` refuses to
+measure a frame with no object or an object too small to inset, and says so
+when the ground is too uneven to outline against. A lit sphere at 0.6x
+brightness, bigger and elsewhere in the frame, must read 0.6x (within 0.02 on
+`mean`, 0.03 on `form`), and its outline must match the bright copy's on two
+grounds, one lighter and one darker than its shadow side.
 
 ```bash
-pip install pytest && pytest -q
+pip install ".[dev]" && pytest -q
 ```
 
 A test that only checked "the function returns a number" would have passed
@@ -175,6 +234,15 @@ That last point is the one I would keep if I could keep only one.
 
 ---
 
-MIT. Contributions welcome, particularly new failure modes — if a measurement
-has lied to you in a way not documented here, that is the most valuable thing
-you could add.
+## Citing it
+
+If you use it in research, GitHub's "Cite this repository" button (from
+`CITATION.cff`) gives the citation.
+
+## Contributing
+
+Contributions are welcome, particularly new failure modes. If a measurement has
+lied to you in a way not documented here, that is the most valuable thing you
+could add: open an issue with the two images and the command you ran.
+
+MIT licence.

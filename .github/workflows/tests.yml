@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install ".[dev]"
+      - name: Tests
+        run: python -m pytest -q
+      - name: The README example still says what the README says
+        run: |
+          python examples/make_examples.py
+          pixel-truth compare examples/lit.png examples/shuffled.png --json > out.json
+          python - <<'EOF'
+          import json
+          r = json.load(open("out.json"))["fields"]
+          for k in ("mean", "p10", "p50", "p90", "saturation"):
+              assert r[k]["delta"] == 0, (k, r[k])
+          assert r["ratio"]["reference"] > 10 > 1 > r["ratio"]["candidate"], r["ratio"]
+          print("README example holds")
+          EOF
