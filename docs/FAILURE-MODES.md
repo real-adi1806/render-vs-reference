@@ -108,8 +108,10 @@ resampler's smoothness, not the image's texture. Every upscaled comparison
 converges toward "identical" no matter how different the sources are.
 
 **The fix.** Measure at native resolution. Magnify to *look*, never to measure.
-If the two sides are at different scales, downscale the larger, never upscale
-the smaller.
+If the two sides are at different scales, do not resample either to match: the
+command line stops. Downscaling the larger side averages its noise away (the same
+renderer read grain 6.00 at 400 px and 2.00 at 800 px once squeezed to 400), and
+upscaling the smaller measures the resampler. Render or crop both to one size.
 
 ---
 

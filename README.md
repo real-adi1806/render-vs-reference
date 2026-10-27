@@ -55,7 +55,7 @@ a lit, curved surface; `shuffled.png` is those same pixels in a random order.
   p50              117.57     117.57     +0.00    1.00
   p90              160.09     160.09     +0.00    1.00
   saturation        36.84      36.84     +0.00    1.00
-  grain              2.00      40.31    +38.31   20.15
+  grain              2.00      40.27    +38.27   20.14
   form              40.16       0.92    -39.25    0.02
   ratio             20.08       0.02    -20.06    0.00
   dark_share         1.48       1.48     +0.00       -
@@ -98,15 +98,22 @@ repo.** The code is the smaller half.
 | `mean p10 p50 p90` | luma, **0-255**, named so you cannot confuse it with L\* |
 | `dark_share` | fraction below a threshold you choose |
 | `saturation` | median, 0-100 |
-| `grain` | median absolute luma delta between adjacent pixels: *surface texture* |
+| `grain` | median absolute luma delta to the neighbouring pixel, looking along rows and down columns and averaging the two: *surface texture* |
 | `form` | sd of 4×4 cell means: *variation across the object* |
 | `ratio` | `form / grain` |
 
-**`ratio` is the one worth knowing about.** A lit solid varies more *across
+`grain` is a neighbour statistic, so it belongs to an image's own pixel grid
+and is only comparable between images of the **same size** (see below).
+
+**`ratio` is the one worth knowing about.** It is a relative indicator for
+comparing two images of the same size, not an absolute scale: there is no
+calibrated number at which a surface becomes "a solid", and the 20 and 0.02
+in the example above only mean something next to each other. A lit solid varies more *across
 itself* than *between neighbouring pixels*, so its ratio is well above 1. Noise
 painted on a silhouette goes the other way, well below 1. A histogram cannot tell those
 apart (two images with identical distributions can be a shaded object and
-static, as the example above shows), but this can, and it is a single number.
+static, as the example above shows), but this can, and it is a single number
+(compared between two images, never read alone).
 
 `form` and `grain` are in luma levels, so they shrink when the whole object gets
 darker. A copy at 0.6x brightness reads about 0.6x on `mean` and on `form`. A
@@ -133,6 +140,25 @@ pixel-truth specks ref.png ours.png
 # machine-readable for CI
 pixel-truth compare ref.png ours.png --json
 ```
+
+### Images of different sizes
+
+Nothing is ever resampled. Each image is measured at its own native resolution,
+and the command line stops if the two files are not the same size:
+
+- **Different sizes, same shape** (say 400 x 400 and 800 x 800): refused, because
+  grain and `ratio` are not comparable between pixel grids. The same renderer
+  gave grain 6.00 at both sizes when each was measured natively, and 6.00 against
+  2.00 when the larger was first squeezed down to the smaller. Render or crop
+  both to one size. `--allow-different-sizes` measures them natively anyway and
+  prints a warning that grain and `ratio` are not comparable; read only the
+  tone rows (`mean`, percentiles, `saturation`, `dark_share`) from that run.
+- **Different aspect ratios** (say 1000 x 500 and 800 x 600): always refused,
+  with or without the flag, because making them the same size would stretch one.
+  Crop both to the same shape.
+
+With `--isolate` the check runs on the files as given, before they are cropped
+to the object, so two same-size frames with different-sized objects are fine.
 
 ### `--isolate`
 
@@ -190,8 +216,8 @@ sample changed and your statistics are not comparable. `compare()` sets
 > printed.**
 
 Everything here enforces some part of that. `compare()` runs identical code over
-both images. `_same_scale()` **downscales** the larger side and never upscales
-the smaller. `measure()` always reports `n`. `luma()` says which scale it is in
+both images. The command line never resamples: it stops on images of different
+sizes or shapes rather than squeeze one to match. `measure()` always reports `n`. `luma()` says which scale it is in
 its own docstring.
 
 ---
@@ -209,6 +235,12 @@ when the ground is too uneven to outline against. A lit sphere at 0.6x
 brightness, bigger and elsewhere in the frame, must read 0.6x (within 0.02 on
 `mean`, 0.03 on `form`), and its outline must match the bright copy's on two
 grounds, one lighter and one darker than its shadow side.
+
+The size rules have tests too: the command line refuses a grain comparison
+between a 100 px and a 200 px render of the same noise, measures each natively
+(and says the result is not comparable) when given `--allow-different-sizes`,
+and refuses differing aspect ratios with or without it. Grain is checked on
+horizontal and vertical stripes, which it used to read as 0 and 200.
 
 ```bash
 pip install ".[dev]" && pytest -q
@@ -233,6 +265,22 @@ throughout every incident described here.
 That last point is the one I would keep if I could keep only one.
 
 ---
+
+## Changes in 0.2.0
+
+Behaviour changes, found by an outside review:
+
+- `compare` and `specks` no longer downscale the larger image. They stop on images
+  of different sizes (unless `--allow-different-sizes`) and always on different
+  aspect ratios. Before, two renders of the same quality at 400 px and 800 px read
+  grain 6.00 and 2.00, and 1000 x 500 beside 800 x 600 were both squashed to
+  800 x 500.
+- `grain` now looks in both directions (left and above, medians averaged). Before
+  it looked along rows only, so horizontal stripes of 0 and 200 read grain 0.00;
+  they now read 100.00, the same as vertical stripes. For the README example the
+  shuffled image's grain moved from 40.31 to 40.27.
+- README wording on `ratio` is softened: a relative indicator between same-size
+  images, not a calibrated scale.
 
 ## Citing it
 

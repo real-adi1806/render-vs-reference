@@ -46,28 +46,49 @@ def _prepare(img: Image.Image, use_isolate: bool, label: str):
     return img.crop(box)
 
 
-def _same_scale(a: Image.Image, b: Image.Image) -> tuple[Image.Image, Image.Image]:
-    """Bring two images to one scale by DOWNSCALING the larger.
+ASPECT_TOLERANCE = 0.01   # relative difference in width/height still treated as one shape
 
-    Never upscale: an upscaled image's neighbouring pixels are interpolations of
-    one source pixel, so neighbour statistics measure the resampler. That is
-    failure mode 3.
+
+def _require_comparable(a: Image.Image, b: Image.Image, allow_different_sizes: bool) -> None:
+    """Stop unless the two images can be compared without resampling either.
+
+    The old behaviour squeezed both images to the smaller one's size. Grain is a
+    neighbour statistic, so that averaged the noise away on the larger side (the
+    same renderer read 6.00 at 400 px and 2.00 at 800 px) and, when the shapes
+    differed, bent one image to fit. That is failure mode 3, so nothing is
+    resampled any more: each image is measured at its own native resolution.
     """
     if a.size == b.size:
-        return a, b
-    tw = min(a.width, b.width)
-    th = min(a.height, b.height)
-    resize = lambda im: im if im.size == (tw, th) else im.resize((tw, th), Image.LANCZOS)
-    print(f"  i scales differ; downscaling both to {tw}x{th}", file=sys.stderr)
-    return resize(a), resize(b)
+        return
+    ratio_a, ratio_b = a.width / a.height, b.width / b.height
+    if abs(ratio_a - ratio_b) > ASPECT_TOLERANCE * max(ratio_a, ratio_b):
+        raise SystemExit(
+            f"the images have different aspect ratios ({a.width}x{a.height} and "
+            f"{b.width}x{b.height}), so nothing was measured. Making them the same "
+            "size would stretch one of them. Crop both to the same shape by the same rule, "
+            "at their native resolution.")
+    if not allow_different_sizes:
+        raise SystemExit(
+            f"the images have different sizes ({a.width}x{a.height} and {b.width}x{b.height}), "
+            "so nothing was measured. Grain and the form/grain ratio are neighbour "
+            "statistics and are not comparable between sizes, and resizing first would "
+            "change them. Render or crop both to one size. To measure each at its own "
+            "native resolution anyway, pass --allow-different-sizes.")
+    print(f"  ! the images differ in size ({a.width}x{a.height} and {b.width}x{b.height}). "
+          "Each was measured at its native resolution,\n"
+          "    so grain and ratio are not comparable between the two sides; read only "
+          "mean, percentiles,\n"
+          "    saturation and dark_share.", file=sys.stderr)
 
 
 def cmd_compare(args) -> int:
     ref = _load(args.reference)
     cand = _load(args.candidate)
+    # Checked on the files as loaded, before --isolate crops them: the crops differ in
+    # size whenever the objects do, which says nothing about the pixel grids.
+    _require_comparable(ref, cand, args.allow_different_sizes)
     ref = _prepare(ref, args.isolate, "reference")
     cand = _prepare(cand, args.isolate, "candidate")
-    ref, cand = _same_scale(ref, cand)
 
     result = compare(ref, cand, step=args.step, dark_below=args.dark_below)
 
@@ -110,7 +131,7 @@ def cmd_histogram(args) -> int:
 def cmd_specks(args) -> int:
     ref = _load(args.reference)
     cand = _load(args.candidate)
-    ref, cand = _same_scale(ref, cand)
+    _require_comparable(ref, cand, args.allow_different_sizes)
     a = speck_density(ref, above=args.above)
     b = speck_density(cand, above=args.above)
     if args.json:
@@ -140,6 +161,9 @@ def main(argv=None) -> int:
                    help="reduce each side to the core of its largest bright object")
     c.add_argument("--step", type=int, default=1, help="sample every Nth pixel (same on both sides)")
     c.add_argument("--dark-below", type=float, default=30.0)
+    c.add_argument("--allow-different-sizes", action="store_true",
+                   help="measure images of different sizes at native resolution anyway "
+                        "(grain and ratio are then not comparable)")
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=cmd_compare)
 
@@ -152,6 +176,9 @@ def main(argv=None) -> int:
     s.add_argument("reference")
     s.add_argument("candidate")
     s.add_argument("--above", type=float, default=12.0)
+    s.add_argument("--allow-different-sizes", action="store_true",
+                   help="measure images of different sizes at native resolution anyway "
+                        "(grain and ratio are then not comparable)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_specks)
 

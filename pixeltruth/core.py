@@ -49,7 +49,7 @@ class Stats:
     p90: float
     dark_share: float   # fraction below `dark_below`
     saturation: float   # median, 0-100
-    grain: float        # median |luma delta| between adjacent sampled pixels
+    grain: float        # |luma delta| to the neighbour left and above, median per direction, averaged
     form: float         # sd of cell means over a 4x4 grid: variation ACROSS
     ratio: float        # form / grain. A lit solid is >> 1. Noise is << 1.
 
@@ -87,17 +87,27 @@ def measure(
     `step` samples every Nth pixel in each axis for speed. Use the SAME step on
     both sides: grain is a neighbour statistic, so a different step measures a
     different distance and the numbers stop meaning the same thing.
+
+    `grain` looks in both directions: the median |delta| to the sampled neighbour
+    on the left, and the median |delta| to the one above, averaged. (Looking along
+    rows only reads horizontal stripes as perfectly smooth.) A pair only counts if
+    both pixels are inside `mask`, and a direction with no pairs is left out of
+    the average. Grain is also a property of the image's own pixel grid, so it is
+    only comparable between images of the same size.
     """
     px = image.convert("RGB").load()
     w, h = image.size
 
     vals: list[float] = []
     sats: list[float] = []
-    grains: list[float] = []
+    grains_x: list[float] = []   # |delta| to the sampled neighbour on the left
+    grains_y: list[float] = []   # |delta| to the sampled neighbour above
     grid_vals: list[list[float]] = [[] for _ in range(16)]
 
+    above: dict[int, float] = {}   # the previous sampled row, masked-out pixels absent
     for y in range(0, h, step):
         prev: float | None = None
+        row: dict[int, float] = {}
         for x in range(0, w, step):
             if mask is not None and (x, y) not in mask:
                 prev = None
@@ -114,8 +124,12 @@ def measure(
             grid_vals[gy * 4 + gx].append(v)
 
             if prev is not None:
-                grains.append(abs(v - prev))
+                grains_x.append(abs(v - prev))
+            if x in above:
+                grains_y.append(abs(v - above[x]))
+            row[x] = v
             prev = v
+        above = row
 
     if not vals:
         return Stats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -124,7 +138,8 @@ def measure(
     n = len(vals)
     means = [st.mean(c) for c in grid_vals if len(c) > 30]
     form = st.pstdev(means) if len(means) > 2 else 0.0
-    grain = st.median(grains) if grains else 0.0
+    directional = [st.median(g) for g in (grains_x, grains_y) if g]
+    grain = st.mean(directional) if directional else 0.0
 
     return Stats(
         n=n,

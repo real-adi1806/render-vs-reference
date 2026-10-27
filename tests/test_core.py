@@ -227,8 +227,9 @@ def test_command_line_says_so_when_the_ground_is_too_uneven_to_outline_against(t
 def test_command_line_refuses_to_measure_an_object_too_small_to_inset(tmp_path, capsys):
     """A thin bar is found but its core is under 20 px tall. Measuring the
     whole frame instead would mostly measure the background, so it must stop."""
-    bar = _canvas(480, 180)
-    ImageDraw.Draw(bar).rectangle([40, 80, 440, 95], fill=(200, 200, 200))
+    # Same frame size as the lit image, which compare now requires before it isolates.
+    bar = _canvas()
+    ImageDraw.Draw(bar).rectangle([20, 80, 220, 95], fill=(200, 200, 200))
     thin, lit = tmp_path / "thin.png", tmp_path / "lit.png"
     bar.save(thin)
     _with_object().save(lit)
@@ -292,3 +293,133 @@ def test_speck_density_reports_columns_and_spread():
     assert len(r["columns"]) == 4
     assert r["columns"][0] > r["columns"][3], "a left-heavy field must read left-heavy"
     assert r["spread"] > 1.0
+
+
+# ── failure mode 3, again: the command line must not resample to compare ─────
+
+def _noisy_render(n, seed=3, sigma=6):
+    """A smooth shaded square with independent per-pixel noise, `n` px on a side.
+
+    Two of these at different `n` are the same renderer at two resolutions: the
+    same quality, but grain (a neighbour statistic) is not comparable between them.
+    """
+    import random
+
+    rng = random.Random(seed)
+    im = Image.new("RGB", (n, n))
+    data = []
+    for y in range(n):
+        for x in range(n):
+            base = 60 + 140 * max(0.0, 1 - (((x - 0.4 * n) / n) ** 2 + ((y - 0.4 * n) / n) ** 2) * 2.2)
+            v = max(0, min(255, int(round(base + rng.gauss(0, sigma)))))
+            data.append((v, v, v))
+    im.putdata(data)
+    return im
+
+
+def test_command_line_refuses_to_compare_grain_across_different_sizes(tmp_path, capsys):
+    """Downscaling before measuring averages the noise away: the same renderer read
+    grain 6.00 at one size and 2.00 at another once both were squeezed to the
+    smaller. Different sizes must stop, not produce a number."""
+    small, big = tmp_path / "small.png", tmp_path / "big.png"
+    _noisy_render(100).save(small)
+    _noisy_render(200).save(big)
+
+    code, out, err = _run_cli(["compare", str(small), str(big)], capsys)
+    assert code not in (0, None)
+    assert "different sizes" in str(code)
+    assert "--allow-different-sizes" in str(code)
+    assert "field" not in out and "reference_n" not in out
+
+
+def test_the_opt_in_flag_measures_each_image_at_native_resolution_and_warns(tmp_path, capsys):
+    small, big = tmp_path / "small.png", tmp_path / "big.png"
+    a, b = _noisy_render(100), _noisy_render(200)
+    a.save(small)
+    b.save(big)
+
+    code, out, err = _run_cli(["compare", str(small), str(big), "--allow-different-sizes", "--json"], capsys)
+    assert code == 0
+    assert "not comparable" in err
+    fields = json.loads(out)["fields"]
+    # Native means native: the numbers are exactly what measure() gives for each file.
+    assert fields["grain"]["reference"] == round(measure(a).grain, 2)
+    assert fields["grain"]["candidate"] == round(measure(b).grain, 2)
+    # And the noise really is the same at both sizes (it is per pixel), where the old
+    # downscale-both path made the larger read about half.
+    assert abs(fields["grain"]["reference"] - fields["grain"]["candidate"]) < 0.5, fields["grain"]
+
+
+def test_same_size_images_compare_without_a_flag_or_a_warning(tmp_path, capsys):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    _noisy_render(60, seed=1).save(a)
+    _noisy_render(60, seed=2).save(b)
+    code, out, err = _run_cli(["compare", str(a), str(b), "--json"], capsys)
+    assert code == 0
+    assert "not comparable" not in err
+    assert json.loads(out)["reference_n"] == 60 * 60
+
+
+def test_command_line_refuses_different_aspect_ratios_even_with_the_flag(tmp_path, capsys):
+    """1000x500 and 800x600 used to be squashed to the same 800x500 rectangle, which
+    bends one of the two images. Refuse, whatever flags are given."""
+    wide, boxy = tmp_path / "wide.png", tmp_path / "boxy.png"
+    Image.new("RGB", (400, 200), (90, 90, 90)).save(wide)
+    Image.new("RGB", (320, 240), (90, 90, 90)).save(boxy)
+
+    for extra in ([], ["--allow-different-sizes"]):
+        code, out, _ = _run_cli(["compare", str(wide), str(boxy)] + extra, capsys)
+        assert code not in (0, None), extra
+        assert "aspect ratio" in str(code)
+        assert "field" not in out and "reference_n" not in out
+
+
+def test_specks_command_refuses_different_sizes_too(tmp_path, capsys):
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    _canvas(240, 180).save(a)
+    _canvas(120, 90).save(b)
+    code, out, _ = _run_cli(["specks", str(a), str(b)], capsys)
+    assert code not in (0, None)
+    assert "different sizes" in str(code)
+
+
+# ── grain looks in both directions ───────────────────────────────────────────
+
+def _stripes(horizontal, size=200, high=200):
+    """Alternate lines of 0 and `high`. Horizontal stripes: rows differ, columns do not."""
+    im = Image.new("RGB", (size, size))
+    px = im.load()
+    for y in range(size):
+        for x in range(size):
+            on = (y if horizontal else x) % 2 == 0
+            v = high if on else 0
+            px[x, y] = (v, v, v)
+    return im
+
+
+def test_grain_sees_horizontal_stripes():
+    """Grain used to look along rows only, so alternate rows of 0 and 200 read 0.00."""
+    assert measure(_stripes(horizontal=True)).grain > 50.0
+
+
+def test_grain_does_not_depend_on_which_way_the_texture_runs():
+    h, v = measure(_stripes(horizontal=True)), measure(_stripes(horizontal=False))
+    assert h.grain == v.grain
+    assert measure(_stripes(True).transpose(Image.ROTATE_90)).grain == h.grain
+
+
+def test_masked_grain_only_pairs_pixels_that_are_both_in_the_mask():
+    """A pixel pair straddling the mask edge is not a pair inside the object."""
+    im = _stripes(horizontal=True, size=40)
+    inside = {(x, y) for x in range(40) for y in range(40) if y < 20}
+    full, cut = measure(im), measure(im, mask=inside)
+    assert cut.grain == full.grain          # stripes everywhere: the same 200 either way
+    # One row has no vertical pairs at all, so only the (all equal) horizontal ones count.
+    one_row = {(x, 5) for x in range(40)}
+    assert measure(im, mask=one_row).grain == 0.0
+    # Two touching rows add the vertical pairs: 0 along rows, 200 down columns.
+    two_rows = {(x, y) for x in range(40) for y in (5, 6)}
+    assert measure(im, mask=two_rows).grain == 100.0
+    # Rows 5 and 7 do not touch, so there is still no vertical pair between them.
+    apart = {(x, y) for x in range(40) for y in (5, 7)}
+    assert measure(im, mask=apart).grain == 0.0

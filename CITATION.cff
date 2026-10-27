@@ -4,8 +4,8 @@ title: "render-vs-reference: measure a render against a reference image without 
 authors:
   - family-names: Krishnan
     given-names: Adithya
-version: 0.1.0
-date-released: 2026-10-26
+version: 0.2.0
+date-released: 2026-10-27
 license: MIT
 repository-code: "https://github.com/real-adi1806/render-vs-reference"
 keywords:
